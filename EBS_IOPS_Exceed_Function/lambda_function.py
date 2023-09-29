@@ -29,10 +29,17 @@ def lambda_handler(event, context):
 
     # Define increment of IOPS & Size
     iops+=500
-    size+=5
     
-    # new_size=math.ceil(iops/500)
-
+    # IOPS to Size ratio must not exceed 500
+    print("Checking IOPS to Size ratio...")
+    if iops/size >= 500:
+        
+        print("IOPS to Size ratio exceeded, increasing Volume Size...")
+        size = math.ceil(iops/500) + 5 
+        
+    else:
+        print("IOPS to Size ratio check good, within 500")
+    
     # EBS volume modification
     response = client.modify_volume(
         DryRun=False,
@@ -67,8 +74,8 @@ def lambda_handler(event, context):
     metrics=alarmMetadata['MetricAlarms'][0]['Metrics']
     threshold= alarmMetadata['MetricAlarms'][0]['Threshold']
     
-    # Define increment of CW alarm threshold
-    threshold+=500
+    # Set threshold to 70% of set level of IOPS 
+    threshold = 0.7*iops 
     
     # CW alarm threshold modification 
     cloudwatchModification = clientCW.put_metric_alarm(
@@ -81,3 +88,5 @@ def lambda_handler(event, context):
     )
     
     print(cloudwatchModification)  
+
+    print("Successfully increased CloudWatch Alarm threshold to: " + str(threshold))

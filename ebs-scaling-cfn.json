@@ -1,0 +1,336 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "EBS automated scaling with Lambda and CloudWatch demo",
+    "Parameters": {
+        "keyName": {
+            "Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+            "Type": "AWS::EC2::KeyPair::KeyName",
+            "ConstraintDescription": "must be the name of an existing EC2 KeyPair"
+        },
+        "ingressIPv4": {
+            "Type": "String",
+            "Description": "Allowed source IP prefix (e.g. 1.2.3.4/32, get your source IP from https://checkip.amazonaws.com )",
+            "Default": "0.0.0.0/0"
+        },
+        "instanceType": {
+            "Type": "String",
+            "Description": "Instance type of EC2 instance",
+            "Default": "t2.micro"
+        },
+        "volumeSize": {
+            "Type": "Number",
+            "Description": "Size of the EBS volume (GiB)",
+            "Default": "8"
+        },
+        "volumeIops": {
+            "Type": "Number",
+            "Description": "Provisioned IOPS of the EBS volume",
+            "Default": "3000"
+        },
+        "alarmThreshold": {
+            "Type": "Number",
+            "Description": "Threshold for CloudWatch Alarm",
+            "Default": "2100"
+        },
+        "lambdaArn": {
+            "Type": "String",
+            "Description": "Arn of Lambda Function"
+        }
+    },
+    "Resources": {
+        "securityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "EBS Scaling Demo - Web Server",
+                "SecurityGroupIngress": [
+                    {
+                        "Description": "Allow HTTP",
+                        "IpProtocol": "tcp",
+                        "FromPort": "80",
+                        "ToPort": "80",
+                        "CidrIp": {
+                            "Ref": "ingressIPv4"
+                        }
+                    },
+                    {
+                        "Description": "Allow SSH",
+                        "IpProtocol": "tcp",
+                        "FromPort": "22",
+                        "ToPort": "22",
+                        "CidrIp": {
+                            "Ref": "ingressIPv4"
+                        }
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "StackName",
+                        "Value": {
+                            "Fn::Sub": "${AWS::StackName}"
+                        }
+                    },
+                    {
+                        "Key": "StackId",
+                        "Value": {
+                            "Fn::Sub": "${AWS::StackId}"
+                        }
+                    }
+                ]
+            }
+        },
+        "instanceIamRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "ec2.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path": "/",
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+                ],
+                "Tags": [
+                    {
+                        "Key": "StackName",
+                        "Value": {
+                            "Fn::Sub": "${AWS::StackName}"
+                        }
+                    },
+                    {
+                        "Key": "StackId",
+                        "Value": {
+                            "Fn::Sub": "${AWS::StackId}"
+                        }
+                    }
+                ]
+            }
+        },
+        "instanceProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "Path": "/",
+                "Roles": [
+                    {
+                        "Ref": "instanceIamRole"
+                    }
+                ]
+            }
+        },
+        "instance": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "KeyName": {
+                    "Ref": "keyName"
+                },
+                "ImageId": "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}",
+                "InstanceType": {
+                    "Ref": "instanceType"
+                },
+                "IamInstanceProfile": {
+                    "Ref": "instanceProfile"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "securityGroup"
+                    }
+                ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Web server for EBS Scaling"
+                    },
+                    {
+                        "Key": "StackName",
+                        "Value": {
+                            "Fn::Sub": "${AWS::StackName}"
+                        }
+                    },
+                    {
+                        "Key": "StackId",
+                        "Value": {
+                            "Fn::Sub": "${AWS::StackId}"
+                        }
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": "#!/bin/sh"
+                }
+            }
+        },
+        "volume": {
+            "Type": "AWS::EC2::Volume",
+            "Properties": {
+                "Size": {
+                    "Ref": "volumeSize"
+                },
+                "VolumeType": "gp3",
+                "Iops": {
+                    "Ref": "volumeIops"
+                },
+                "AvailabilityZone": {
+                    "Fn::GetAtt": [
+                        "instance",
+                        "AvailabilityZone"
+                    ]
+                }
+            }
+        },
+        "volumeAttachment": {
+            "Type": "AWS::EC2::VolumeAttachment",
+            "Properties": {
+                "Device": "/dev/sdf",
+                "InstanceId": {
+                    "Ref": "instance"
+                },
+                "VolumeId": {
+                    "Ref": "volume"
+                }
+            }
+        },
+        "snsTopic": {
+            "Type": "AWS::SNS::Topic",
+            "Properties": {
+                "Subscription": [
+                    {
+                        "Endpoint": "bryancwh@amazon.com",
+                        "Protocol": "email"
+                    },
+                    {
+                        "Endpoint": {
+                            "Ref": "lambdaArn"
+                        },
+                        "Protocol": "lambda"
+                    }
+                ],
+                "TopicName": {
+                    "Fn::Sub": "${AWS::StackName}-exceed-iops-topic"
+
+                }
+            }
+        },
+        "cloudwatchAlarm": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Fn::GetAtt": [
+                            "snsTopic",
+                            "TopicArn"
+                        ]
+                    }
+                ],
+                "AlarmDescription": "Alarm when volume IOPS exceed threshold",
+                "AlarmName": {
+                    "Fn::Sub": "${volume}-exceed-iops"
+                },
+                "ComparisonOperator": "GreaterThanThreshold",
+                "DatapointsToAlarm": 1,
+                "EvaluationPeriods": 1,
+                "Metrics": [
+                    {
+                        "Expression": "(m1+m2)/60",
+                        "Id": "e1",
+                        "Label": "Expression1",
+                        "ReturnData": true
+                    },
+                    {
+                        "Id": "m1",
+                        "MetricStat": {
+                            "Metric": {
+                                "Dimensions": [
+                                    {
+                                        "Value": {
+                                            "Fn::GetAtt": [
+                                                "volume",
+                                                "VolumeId"
+                                            ]
+                                        },
+                                        "Name": "VolumeId"
+                                    }
+                                ],
+                                "MetricName": "VolumeWriteOps",
+                                "Namespace": "AWS/EBS"
+                            },
+                            "Period": 60,
+                            "Stat": "Average"
+                        },
+                        "ReturnData": false
+                    },
+                    {
+                        "Id": "m2",
+                        "MetricStat": {
+                            "Metric": {
+                                "Dimensions": [
+                                    {
+                                        "Value": {
+                                            "Fn::GetAtt": [
+                                                "volume",
+                                                "VolumeId"
+                                            ]
+                                        },
+                                        "Name": "VolumeId"
+                                    }
+                                ],
+                                "MetricName": "VolumeReadOps",
+                                "Namespace": "AWS/EBS"
+                            },
+                            "Period": 60,
+                            "Stat": "Average"
+                        },
+                        "ReturnData": false
+                    }
+                ],
+                "Threshold": {
+                    "Ref": "alarmThreshold"
+                },
+                "TreatMissingData": "missing"
+            }
+        }
+    },
+    "Outputs": {
+        "PublicDNS": {
+            "Description": "Public DNSName of the newly created EC2 instance",
+            "Value": {
+                "Fn::GetAtt": [
+                    "instance",
+                    "PublicDnsName"
+                ]
+            }
+        },
+        "PublicIP": {
+            "Description": "Public IP address of the newly created EC2 instance",
+            "Value": {
+                "Fn::GetAtt": [
+                    "instance",
+                    "PublicIp"
+                ]
+            }
+        },
+        "EC2Console": {
+            "Description": "EC2 Instance Console",
+            "Value": {
+                "Fn::Sub": "https://console.aws.amazon.com/ec2/home?region=${AWS::Region}#Instances:search=${instance}"
+            }
+        },
+        "VolumeId": {
+            "Description": "The ID of the attached volume",
+            "Value": {
+                "Fn::GetAtt": [
+                    "volume",
+                    "VolumeId"
+                ]
+            }
+        }
+    }
+}
